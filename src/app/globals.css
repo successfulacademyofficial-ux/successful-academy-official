@@ -1,0 +1,219 @@
+@import "tailwindcss";
+
+/* ================================
+   Successful Academy Global Styles
+   Clean Professional Design Mode
+   Emoji / Symbol Design Icons Removed
+================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #ffffff;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* ================================
+   REMOVE CHILDISH FLOATING ICONS
+================================ */
+
+/* Home Page */
+.home-rocket,
+.home-cap,
+.home-card-emoji,
+.exam-card-icon,
+.ai-phone,
+.quick-emoji {
+  display: none !important;
+}
+
+/* Settings Page */
+.settings-gear,
+.settings-gear-one,
+.settings-gear-two,
+.settings-card-icon,
+.settings-chip {
+  display: none !important;
+}
+
+/* Study Materials Page */
+.study-floating-icon,
+.study-card-icon,
+.study-folder-icon,
+.study-resource-icon,
+.study-bg-icon,
+.study-book,
+.study-pencil {
+  display: none !important;
+}
+
+/* Current Affairs Page */
+.ca-bg-icon,
+.ca-floating-icon,
+.ca-card-icon,
+.ca-folder-icon,
+.ca-news-icon,
+.ca-resource-icon,
+.ca-badge-icon,
+.ca-cube-icon,
+.folder-cube-icon,
+.folder-3d-icon,
+.folder-icon,
+.resource-icon {
+  display: none !important;
+}
+
+/* Live Classes Page */
+.live-floating-icon,
+.live-card-icon,
+.live-folder-icon,
+.live-screen-icon,
+.live-stage-icon,
+.live-camera-icon,
+.live-play-icon,
+.live-bg-icon {
+  display: none !important;
+}
+
+/* Mock Test Page */
+.mt-trophy,
+.mt-target,
+.mt-star-card,
+.mt-folder-medal,
+.mt-folder-cube,
+.subject-emoji,
+.dashboard-floating-icon,
+.dashboard-icon-one,
+.dashboard-icon-two,
+.score-confetti,
+.confetti-one,
+.confetti-two,
+.confetti-three {
+  display: none !important;
+}
+
+/* Job Details Page */
+.job-briefcase,
+.job-bell,
+.job-badge,
+.job-folder-pin,
+.job-folder-icon,
+.job-pdf-icon,
+.job-inside-icon,
+.job-info-stamp,
+.job-folder-ticket {
+  display: none !important;
+}
+
+/* Previous Papers / Chat / Other Pages */
+.paper-icon,
+.paper-floating-icon,
+.chat-icon,
+.chat-floating-icon,
+.bot-icon,
+.ai-icon,
+.support-icon {
+  display: none !important;
+}
+
+/* ================================
+   REMOVE SYMBOL-LIKE DECORATION
+================================ */
+
+[class*="emoji"],
+[class*="floating-icon"],
+[class*="bg-icon"],
+[class*="card-icon"],
+[class*="folder-icon"],
+[class*="resource-icon"],
+[class*="cube-icon"],
+[class*="stage-icon"],
+[class*="screen-icon"],
+[class*="camera-icon"],
+[class*="play-icon"],
+[class*="confetti"],
+[class*="trophy"],
+[class*="target"],
+[class*="badge"],
+[class*="medal"],
+[class*="bell"],
+[class*="briefcase"],
+[class*="gear"],
+[class*="rocket"],
+[class*="cap"] {
+  display: none !important;
+}
+
+/* ================================
+   MAKE CARDS LOOK CLEAN AFTER ICON REMOVAL
+================================ */
+
+.home-main-card,
+.mt-folder-card,
+.mt-set-card,
+.job-folder-card,
+.job-info-card,
+.job-pdf-card,
+.settings-card,
+.quick-card,
+.subject-card,
+.resource-3d-card,
+.folder-3d-pro,
+.folder-panel-neo,
+.folder-card,
+.live-folder-card,
+.study-folder-card,
+.ca-folder-card {
+  overflow: hidden;
+}
+
+/* Remove extra empty icon spaces in cards */
+.home-main-card,
+.quick-card {
+  gap: 10px !important;
+}
+
+/* ================================
+   TOP BAR CLEAN MODE
+================================ */
+
+/* Keep menu and selector usable */
+.top-app-bar select {
+  max-width: 100%;
+}
+
+/* Hide gift/reward decorative area if it looks childish */
+.top-app-bar > div:last-child {
+  display: none !important;
+}
+
+/* ================================
+   MOBILE FRIENDLY
+================================ */
+
+@media (max-width: 600px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .home-mode-chip {
+    display: none !important;
+  }
+}
