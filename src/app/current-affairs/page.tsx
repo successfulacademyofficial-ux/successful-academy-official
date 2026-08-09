@@ -451,7 +451,7 @@ function CurrentAffairsContent() {
     setVideoLink("");
   };
 
-  const uploadPdf = async () => {
+const uploadPdf = async () => {
     if (!isAdmin) return;
 
     if (!pdfTitle.trim() || !pdfFile || !openedFolderId) {
@@ -486,30 +486,58 @@ function CurrentAffairsContent() {
       return;
     }
 
-    const dataUrl = await fileToDataUrl(pdfFile);
+    try {
+      // 1. Loading shuru (User ko batane ke liye)
+      alert("File upload ho rahi hai, kripya thoda intezaar karein... ⏳");
 
-    const item: PdfItem = {
-      id: makeId(),
-      folderId: openedFolderId,
-      title: pdfTitle.trim(),
-      fileName: pdfFile.name,
-      dataUrl,
-      createdAt: Date.now(),
-    };
+      // 2. Cloudinary ke liye file aur Gate Pass ka packet banana
+      const formData = new FormData();
+      formData.append("file", pdfFile);
+      formData.append("upload_preset", "successful_preset"); // Aapka Cloudinary Gate Pass
 
-    await savePdfToDb(item);
+      // 3. Cloudinary Godown mein file bhejna
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+      const response = await fetch(
+        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
 
-    setPdfItems([item, ...pdfItems]);
-    setPdfTitle("");
-    setPdfFile(null);
+      const data = await response.json();
 
-    alert("File uploaded successfully.");
+      if (!response.ok) {
+        throw new Error(data.error?.message || "Cloudinary upload failed");
+      }
 
-    void sendNotificationToStudents({
-      title: "Successful Academy Official",
-      body: "New Current Affairs Notes uploaded.",
-      url: `/current-affairs?exam=${encodeURIComponent(selectedExam)}`,
-    });
+      // 4. Asli Cloudinary URL ko aapke folder mein save karna
+      const item = {
+        id: makeId(),
+        folderId: openedFolderId,
+        title: pdfTitle.trim(),
+        fileName: pdfFile.name,
+        dataUrl: data.secure_url, // Jaadu yahan hai! Asli Live Link
+        createdAt: Date.now(),
+      };
+
+      await savePdfToDb(item);
+
+      setPdfItems([item, ...pdfItems]);
+      setPdfTitle("");
+      setPdfFile(null);
+
+      alert("Wah! File successfully upload ho gayi 🚀");
+
+      void sendNotificationToStudents({
+        title: "Successful Academy Official",
+        body: "New Current Affairs Notes uploaded.",
+        url: `/current-affairs?exam=${encodeURIComponent(selectedExam)}`,
+      });
+    } catch (error) {
+      console.error("Upload Error:", error);
+      alert("Upload mein error aayi. Please dobara try karein.");
+    }
   };
 
   const deletePdf = async (id: string) => {
