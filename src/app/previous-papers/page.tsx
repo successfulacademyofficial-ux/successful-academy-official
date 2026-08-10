@@ -5,7 +5,8 @@ import type { ChangeEvent, CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { collection, doc, setDoc, getDocs, deleteDoc, updateDoc } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 import { sendNotificationToStudents } from "@/lib/sendNotification";
 
 type FolderItem = {
@@ -26,8 +27,6 @@ type PaperItem = {
 };
 
 const ADMIN_EMAIL = "successfulacademyofficial@gmail.com";
-const DB_NAME = "successful_academy_previous_papers_db";
-const STORE_NAME = "previous_papers_pdfs";
 
 export default function PreviousPapersPage() {
   const router = useRouter();
@@ -54,101 +53,15 @@ export default function PreviousPapersPage() {
   const [showAddPaper, setShowAddPaper] = useState(false);
   const [paperTitle, setPaperTitle] = useState("");
 
-  function openDatabase(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, 1);
-
-      request.onupgradeneeded = () => {
-        const db = request.result;
-
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: "id" });
-          store.createIndex("folderId", "folderId", { unique: false });
-        }
-      };
-
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  }
-
-  async function getPapersByFolder(folderId: string): Promise<PaperItem[]> {
-    const db = await openDatabase();
-
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, "readonly");
-      const store = tx.objectStore(STORE_NAME);
-      const index = store.index("folderId");
-      const request = index.getAll(folderId);
-
-      request.onsuccess = () => {
-        db.close();
-        resolve(request.result as PaperItem[]);
-      };
-
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-    });
-  }
-
-  async function savePaperToDb(paper: PaperItem): Promise<void> {
-    const db = await openDatabase();
-
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      const store = tx.objectStore(STORE_NAME);
-
-      store.put(paper);
-
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
-  }
-
-  async function deletePaperFromDb(id: string): Promise<void> {
-    const db = await openDatabase();
-
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      const store = tx.objectStore(STORE_NAME);
-
-      store.delete(id);
-
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
-  }
-
-  function readFileAsDataUrl(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error);
-
-      reader.readAsDataURL(file);
-    });
-  }
-
   async function loadPapers(folderId: string) {
-    const files = await getPapersByFolder(folderId);
-    setPapers(files.sort((a, b) => b.createdAt - a.createdAt));
+    try {
+      const pSnap = await getDocs(collection(db, "pyp_papers"));
+      const allPapers = pSnap.docs.map(d => d.data() as PaperItem);
+      const folderPapers = allPapers.filter(p => p.folderId === folderId);
+      setPapers(folderPapers.sort((a, b) => b.createdAt - a.createdAt));
+    } catch (error) {
+      console.error("Error loading papers:", error);
+    }
   }
 
   useEffect(() => {
@@ -166,24 +79,20 @@ export default function PreviousPapersPage() {
   }, [router]);
 
   useEffect(() => {
-    try {
-      const savedFolders = localStorage.getItem("previous_papers_folders");
-
-      if (savedFolders) {
-        setFolders(JSON.parse(savedFolders));
+    const fetchFolders = async () => {
+      try {
+        const fSnap = await getDocs(collection(db, "pyp_folders"));
+        const loadedFolders = fSnap.docs.map(d => d.data() as FolderItem).sort((a, b) => Number(b.id) - Number(a.id));
+        setFolders(loadedFolders);
+      } catch (error) {
+        console.error("Error fetching folders:", error);
+      } finally {
+        setDataLoaded(true);
       }
-    } catch {
-      localStorage.removeItem("previous_papers_folders");
-    } finally {
-      setDataLoaded(true);
-    }
-  }, []);
+    };
 
-  useEffect(() => {
-    if (dataLoaded) {
-      localStorage.setItem("previous_papers_folders", JSON.stringify(folders));
-    }
-  }, [folders, dataLoaded]);
+    fetchFolders();
+  }, []);
 
   useEffect(() => {
     if (selectedFolder) {
@@ -215,7 +124,7 @@ export default function PreviousPapersPage() {
     reader.readAsDataURL(file);
   };
 
-  const addFolder = () => {
+  const addFolder = async () => {
     if (!folderName.trim()) {
       alert("Please enter a folder name.");
       return;
@@ -228,11 +137,17 @@ export default function PreviousPapersPage() {
       bgImage,
     };
 
-    setFolders([newFolder, ...folders]);
-    setFolderName("");
-    setBgColor("#7c3aed");
-    setBgImage("");
-    setShowAddFolder(false);
+    try {
+      await setDoc(doc(db, "pyp_folders", newFolder.id), newFolder);
+      setFolders([newFolder, ...folders]);
+      setFolderName("");
+      setBgColor("#7c3aed");
+      setBgImage("");
+      setShowAddFolder(false);
+    } catch (error) {
+      console.error("Error creating folder:", error);
+      alert("Folder banane mein error aayi.");
+    }
   };
 
   const startEditFolder = (folder: FolderItem) => {
@@ -244,104 +159,151 @@ export default function PreviousPapersPage() {
     setShowAddFolder(false);
   };
 
-  const saveEditFolder = () => {
+  const saveEditFolder = async () => {
     if (!editTitle.trim()) {
       alert("Please enter a folder name.");
       return;
     }
 
-    setFolders(
-      folders.map((folder) =>
-        folder.id === editId
-          ? {
-              ...folder,
-              title: editTitle,
-              bgColor: editBgColor,
-              bgImage: editBgImage,
-            }
-          : folder
-      )
-    );
+    try {
+      await updateDoc(doc(db, "pyp_folders", editId), {
+        title: editTitle,
+        bgColor: editBgColor,
+        bgImage: editBgImage,
+      });
 
-    setEditId("");
-    setEditTitle("");
-    setEditBgColor("#7c3aed");
-    setEditBgImage("");
+      setFolders(
+        folders.map((folder) =>
+          folder.id === editId
+            ? {
+                ...folder,
+                title: editTitle,
+                bgColor: editBgColor,
+                bgImage: editBgImage,
+              }
+            : folder
+        )
+      );
+
+      setEditId("");
+      setEditTitle("");
+      setEditBgColor("#7c3aed");
+      setEditBgImage("");
+    } catch (error) {
+      console.error("Error updating folder:", error);
+    }
   };
 
-  const deleteFolder = (id: string) => {
+  const deleteFolder = async (id: string) => {
     if (!confirm("Do you want to delete this folder?")) return;
 
-    setFolders(folders.filter((folder) => folder.id !== id));
-    setOpenMenuId("");
-    setEditId("");
+    try {
+      await deleteDoc(doc(db, "pyp_folders", id));
+      setFolders(folders.filter((folder) => folder.id !== id));
+
+      const pSnap = await getDocs(collection(db, "pyp_papers"));
+      const papersToDelete = pSnap.docs.filter(d => d.data().folderId === id);
+      for(const p of papersToDelete) {
+         await deleteDoc(doc(db, "pyp_papers", p.id));
+      }
+
+      setOpenMenuId("");
+      setEditId("");
+    } catch (error) {
+      console.error("Delete folder error:", error);
+    }
   };
 
   const handlePdfUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-  if (!selectedFolder) return;
+    if (!selectedFolder) return;
 
-  const file = event.target.files?.[0];
+    const file = event.target.files?.[0];
 
-  if (!file) return;
+    if (!file) return;
 
-  if (!paperTitle.trim()) {
-    alert("Please enter a title first.");
-    event.target.value = "";
-    return;
-  }
+    if (!paperTitle.trim()) {
+      alert("Please enter a title first.");
+      event.target.value = "";
+      return;
+    }
 
-  if (
-    file.type !== "application/pdf" &&
-    !file.name.toLowerCase().endsWith(".pdf")
-  ) {
-    alert("Please upload only a PDF file.");
-    event.target.value = "";
-    return;
-  }
+    if (
+      file.type !== "application/pdf" &&
+      !file.name.toLowerCase().endsWith(".pdf")
+    ) {
+      alert("Please upload only a PDF file.");
+      event.target.value = "";
+      return;
+    }
 
-  if (file.size > 25 * 1024 * 1024) {
-    alert("Keep the PDF under 25MB.");
-    event.target.value = "";
-    return;
-  }
+    if (file.size > 25 * 1024 * 1024) {
+      alert("Keep the PDF under 25MB.");
+      event.target.value = "";
+      return;
+    }
 
-  const dataUrl = await readFileAsDataUrl(file);
+    try {
+      alert("PDF upload ho rahi hai, kripya thoda intezaar karein... ⏳");
 
-  const newPaper: PaperItem = {
-    id: Date.now().toString(),
-    folderId: selectedFolder.id,
-    title: paperTitle,
-    fileName: file.name,
-    size: file.size,
-    dataUrl,
-    createdAt: Date.now(),
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("upload_preset", "successful_preset");
+
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+      const response = await fetch(
+        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
+        { method: "POST", body: formData }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error?.message || "Cloudinary upload failed");
+      }
+
+      const newPaper: PaperItem = {
+        id: Date.now().toString(),
+        folderId: selectedFolder.id,
+        title: paperTitle,
+        fileName: file.name,
+        size: file.size,
+        dataUrl: data.secure_url,
+        createdAt: Date.now(),
+      };
+
+      await setDoc(doc(db, "pyp_papers", newPaper.id), newPaper);
+      setPapers([newPaper, ...papers]);
+
+      setPaperTitle("");
+      setShowAddPaper(false);
+      event.target.value = "";
+
+      alert("Wah! PDF successfully upload ho gayi 🚀");
+
+      void sendNotificationToStudents({
+        title: "Successful Academy Official",
+        body: "New Previous Papers PDF uploaded.",
+        url: "/previous-papers",
+      });
+    } catch (error) {
+      console.error("Upload Error:", error);
+      alert("Upload mein error aayi. Please dobara try karein.");
+      event.target.value = "";
+    }
   };
-
-  await savePaperToDb(newPaper);
-  await loadPapers(selectedFolder.id);
-
-  setPaperTitle("");
-  setShowAddPaper(false);
-  event.target.value = "";
-
-  void sendNotificationToStudents({
-    title: "Successful Academy Official",
-    body: "New Previous Papers PDF uploaded.",
-    url: "/previous-papers",
-  });
-};
 
   const deletePaper = async (id: string) => {
     if (!confirm("Do you want to delete this PDF?")) return;
 
-    await deletePaperFromDb(id);
-
-    if (selectedFolder) {
-      await loadPapers(selectedFolder.id);
+    try {
+      await deleteDoc(doc(db, "pyp_papers", id));
+      setPapers(papers.filter(p => p.id !== id));
+    } catch (error) {
+      console.error("Error deleting PDF:", error);
     }
   };
 
-  if (checkingUser) {
+  if (checkingUser || !dataLoaded) {
     return <main style={loadingStyle}>Loading...</main>;
   }
 
@@ -410,7 +372,7 @@ export default function PreviousPapersPage() {
             />
 
             <p style={{ color: "#555", marginTop: "10px", fontSize: "14px" }}>
-              Enter the title 
+              Enter the title before choosing file.
             </p>
           </section>
         )}
