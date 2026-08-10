@@ -5,40 +5,13 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { collection, doc, setDoc, getDocs, deleteDoc, updateDoc } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 import { useAppLanguage } from "@/hooks/useAppLanguage";
 import { sendNotificationToStudents } from "@/lib/sendNotification";
 
 const ADMIN_EMAIL = "successfulacademyofficial@gmail.com";
 const SELECTED_EXAM_KEY = "selected_exam_v1";
-
-const LIVE_FOLDERS_KEY = "live_classes_live_folders_v7";
-const RECORDED_FOLDERS_KEY = "live_classes_recorded_folders_v7";
-const CLASS_ITEMS_KEY = "live_classes_items_v7";
-
-const OLD_LIVE_FOLDER_KEYS = [
-  "live_classes_live_folders_v7",
-  "live_classes_live_folders_v6",
-  "live_classes_live_folders_v5",
-  "live_classes_live_folders_v4",
-  "live_classes_live_folders_v3",
-];
-
-const OLD_RECORDED_FOLDER_KEYS = [
-  "live_classes_recorded_folders_v7",
-  "live_classes_recorded_folders_v6",
-  "live_classes_recorded_folders_v5",
-  "live_classes_recorded_folders_v4",
-  "live_classes_recorded_folders_v3",
-];
-
-const OLD_CLASS_ITEM_KEYS = [
-  "live_classes_items_v7",
-  "live_classes_items_v6",
-  "live_classes_items_v5",
-  "live_classes_items_v4",
-  "live_classes_items_v3",
-];
 
 type ClassTab = "live" | "recorded";
 
@@ -227,30 +200,29 @@ function LiveClassesContent() {
       setSelectedExam(examFromStorage);
     }
 
-    const savedLiveFolders =
-      readFirstLocalStorageList<FolderType>(OLD_LIVE_FOLDER_KEYS);
-    const savedRecordedFolders =
-      readFirstLocalStorageList<FolderType>(OLD_RECORDED_FOLDER_KEYS);
-    const savedClassItems =
-      readFirstLocalStorageList<ClassItem>(OLD_CLASS_ITEM_KEYS);
+    // Fetch data from Firebase Firestore
+    const fetchAllData = async () => {
+      try {
+        const liveSnap = await getDocs(collection(db, "lc_live_folders"));
+        setLiveFolders(liveSnap.docs.map(d => d.data() as FolderType).sort((a,b) => b.createdAt - a.createdAt));
 
-    setLiveFolders(savedLiveFolders);
-    setRecordedFolders(savedRecordedFolders);
-    setClassItems(savedClassItems);
+        const recSnap = await getDocs(collection(db, "lc_rec_folders"));
+        setRecordedFolders(recSnap.docs.map(d => d.data() as FolderType).sort((a,b) => b.createdAt - a.createdAt));
 
-    localStorage.setItem(LIVE_FOLDERS_KEY, JSON.stringify(savedLiveFolders));
-    localStorage.setItem(
-      RECORDED_FOLDERS_KEY,
-      JSON.stringify(savedRecordedFolders)
-    );
-    localStorage.setItem(CLASS_ITEMS_KEY, JSON.stringify(savedClassItems));
+        const classSnap = await getDocs(collection(db, "lc_classes"));
+        setClassItems(classSnap.docs.map(d => d.data() as ClassItem).sort((a,b) => b.createdAt - a.createdAt));
+      } catch (error) {
+        console.error("Firestore fetch error:", error);
+      }
+    };
+
+    fetchAllData();
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) {
         router.push("/login");
         return;
       }
-
       setEmail(user.email || "");
       setCheckingUser(false);
     });
@@ -258,42 +230,17 @@ function LiveClassesContent() {
     return () => unsubscribe();
   }, [router, searchParams]);
 
-  const saveLiveFolders = (items: FolderType[]) => {
-    setLiveFolders(items);
-    localStorage.setItem(LIVE_FOLDERS_KEY, JSON.stringify(items));
-  };
-
-  const saveRecordedFolders = (items: FolderType[]) => {
-    setRecordedFolders(items);
-    localStorage.setItem(RECORDED_FOLDERS_KEY, JSON.stringify(items));
-  };
-
-  const saveCurrentFolders = (items: FolderType[]) => {
-    if (activeTab === "live") {
-      saveLiveFolders(items);
-    } else {
-      saveRecordedFolders(items);
-    }
-  };
-
-  const saveClassItems = (items: ClassItem[]) => {
-    setClassItems(items);
-    localStorage.setItem(CLASS_ITEMS_KEY, JSON.stringify(items));
-  };
-
   const makeId = () => {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
       return crypto.randomUUID();
     }
-
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   };
 
-  const createFolder = () => {
+  const createFolder = async () => {
     if (!isAdmin) return;
 
     const cleanName = folderName.trim();
-
     if (!cleanName) {
       alert("Please enter a folder name.");
       return;
@@ -308,10 +255,19 @@ function LiveClassesContent() {
       createdAt: Date.now(),
     };
 
-    if (activeTab === "live") {
-      saveLiveFolders([newFolder, ...liveFolders]);
-    } else {
-      saveRecordedFolders([newFolder, ...recordedFolders]);
+    try {
+      const colName = activeTab === "live" ? "lc_live_folders" : "lc_rec_folders";
+      await setDoc(doc(db, colName, newFolder.id), newFolder);
+      
+      if (activeTab === "live") {
+        setLiveFolders([newFolder, ...liveFolders]);
+      } else {
+        setRecordedFolders([newFolder, ...recordedFolders]);
+      }
+    } catch (error) {
+      console.error("Error creating folder:", error);
+      alert("Folder banane mein error aayi.");
+      return;
     }
 
     setFolderName("");
@@ -322,35 +278,42 @@ function LiveClassesContent() {
 
   const openRenameBox = (folder: FolderType) => {
     if (!isAdmin) return;
-
     setRenameFolderId(folder.id);
     setRenameValue(folder.name);
     setBackgroundFolderId("");
     setMenuOpenId("");
   };
 
-  const saveRenameFolder = () => {
+  const saveRenameFolder = async () => {
     if (!isAdmin) return;
-
     const cleanName = renameValue.trim();
-
     if (!cleanName) {
       alert("Folder name likho.");
       return;
     }
 
-    const updated = currentFolders.map((folder) =>
-      folder.id === renameFolderId ? { ...folder, name: cleanName } : folder
-    );
+    try {
+      const colName = activeTab === "live" ? "lc_live_folders" : "lc_rec_folders";
+      await updateDoc(doc(db, colName, renameFolderId), { name: cleanName });
 
-    saveCurrentFolders(updated);
-    setRenameFolderId("");
-    setRenameValue("");
+      const updated = currentFolders.map((folder) =>
+        folder.id === renameFolderId ? { ...folder, name: cleanName } : folder
+      );
+
+      if (activeTab === "live") {
+        setLiveFolders(updated);
+      } else {
+        setRecordedFolders(updated);
+      }
+      setRenameFolderId("");
+      setRenameValue("");
+    } catch (error) {
+      console.error("Error renaming folder:", error);
+    }
   };
 
   const openBackgroundBox = (folder: FolderType) => {
     if (!isAdmin) return;
-
     setBackgroundFolderId(folder.id);
     setEditBgColor(folder.backgroundColor || "#ef4444");
     setEditBgImage(folder.backgroundImage || "");
@@ -358,42 +321,62 @@ function LiveClassesContent() {
     setMenuOpenId("");
   };
 
-  const saveBackgroundChange = () => {
+  const saveBackgroundChange = async () => {
     if (!isAdmin) return;
 
-    const updated = currentFolders.map((folder) =>
-      folder.id === backgroundFolderId
-        ? {
-            ...folder,
-            backgroundColor: editBgColor,
-            backgroundImage: editBgImage,
-          }
-        : folder
-    );
+    try {
+      const colName = activeTab === "live" ? "lc_live_folders" : "lc_rec_folders";
+      await updateDoc(doc(db, colName, backgroundFolderId), {
+        backgroundColor: editBgColor,
+        backgroundImage: editBgImage,
+      });
 
-    saveCurrentFolders(updated);
-    setBackgroundFolderId("");
-    setEditBgImage("");
+      const updated = currentFolders.map((folder) =>
+        folder.id === backgroundFolderId
+          ? { ...folder, backgroundColor: editBgColor, backgroundImage: editBgImage }
+          : folder
+      );
+
+      if (activeTab === "live") {
+        setLiveFolders(updated);
+      } else {
+        setRecordedFolders(updated);
+      }
+      setBackgroundFolderId("");
+      setEditBgImage("");
+    } catch (error) {
+      console.error("Error changing background:", error);
+    }
   };
 
-  const deleteFolder = (folderId: string) => {
+  const deleteFolder = async (folderId: string) => {
     if (!isAdmin) return;
-
     if (!confirm("Do you want to delete this folder?")) return;
 
-    if (activeTab === "live") {
-      saveLiveFolders(liveFolders.filter((item) => item.id !== folderId));
-    } else {
-      saveRecordedFolders(recordedFolders.filter((item) => item.id !== folderId));
+    try {
+      const colName = activeTab === "live" ? "lc_live_folders" : "lc_rec_folders";
+      await deleteDoc(doc(db, colName, folderId));
+
+      if (activeTab === "live") {
+        setLiveFolders(liveFolders.filter((item) => item.id !== folderId));
+      } else {
+        setRecordedFolders(recordedFolders.filter((item) => item.id !== folderId));
+      }
+
+      // Delete associated classes
+      const deletingClasses = classItems.filter((item) => item.folderId === folderId);
+      for (const item of deletingClasses) {
+        await deleteDoc(doc(db, "lc_classes", item.id));
+      }
+      setClassItems(classItems.filter((item) => item.folderId !== folderId));
+
+      if (openedFolderId === folderId) {
+        setOpenedFolderId("");
+      }
+      setMenuOpenId("");
+    } catch (error) {
+      console.error("Delete error:", error);
     }
-
-    saveClassItems(classItems.filter((item) => item.folderId !== folderId));
-
-    if (openedFolderId === folderId) {
-      setOpenedFolderId("");
-    }
-
-    setMenuOpenId("");
   };
 
   const openFolder = (folderId: string) => {
@@ -410,7 +393,7 @@ function LiveClassesContent() {
     setClassLink("");
   };
 
-  const addClass = () => {
+  const addClass = async () => {
     if (!isAdmin) return;
 
     if (!classTitle.trim() || !classLink.trim() || !openedFolderId) {
@@ -428,35 +411,49 @@ function LiveClassesContent() {
       createdAt: Date.now(),
     };
 
-    saveClassItems([item, ...classItems]);
-    setClassTitle("");
-    setClassLink("");
-  };
-  void sendNotificationToStudents({
-  title: "Successful Academy Official",
-  body:
-    activeTab === "live"
-      ? "New Live Class uploaded."
-      : "New Recorded Class uploaded.",
-  url: `/live-classes?exam=${encodeURIComponent(selectedExam)}`,
-});
+    try {
+      await setDoc(doc(db, "lc_classes", item.id), item);
+      setClassItems([item, ...classItems]);
+      setClassTitle("");
+      setClassLink("");
 
-  const toggleClassVisibility = (id: string) => {
-    if (!isAdmin) return;
-
-    const updated = classItems.map((item) =>
-      item.id === id ? { ...item, visible: !item.visible } : item
-    );
-
-    saveClassItems(updated);
+      void sendNotificationToStudents({
+        title: "Successful Academy Official",
+        body: activeTab === "live" ? "New Live Class uploaded." : "New Recorded Class uploaded.",
+        url: `/live-classes?exam=${encodeURIComponent(selectedExam)}`,
+      });
+    } catch (error) {
+      console.error("Error adding class:", error);
+    }
   };
 
-  const deleteClass = (id: string) => {
+  const toggleClassVisibility = async (id: string) => {
     if (!isAdmin) return;
 
+    const item = classItems.find((i) => i.id === id);
+    if (!item) return;
+
+    try {
+      await updateDoc(doc(db, "lc_classes", id), { visible: !item.visible });
+      const updated = classItems.map((c) =>
+        c.id === id ? { ...c, visible: !c.visible } : c
+      );
+      setClassItems(updated);
+    } catch (error) {
+      console.error("Error updating visibility:", error);
+    }
+  };
+
+  const deleteClass = async (id: string) => {
+    if (!isAdmin) return;
     if (!confirm("Do you want to delete this class?")) return;
 
-    saveClassItems(classItems.filter((item) => item.id !== id));
+    try {
+      await deleteDoc(doc(db, "lc_classes", id));
+      setClassItems(classItems.filter((item) => item.id !== id));
+    } catch (error) {
+      console.error("Error deleting class:", error);
+    }
   };
 
   const changeTab = (tab: ClassTab) => {
@@ -550,9 +547,7 @@ function LiveClassesContent() {
                     accept="image/*"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
-
                       if (!file) return;
-
                       const dataUrl = await fileToDataUrl(file);
                       setFolderBgImage(dataUrl);
                     }}
@@ -560,7 +555,7 @@ function LiveClassesContent() {
                   />
 
                   <div style={buttonRowStyle}>
-                    <button onClick={createFolder} style={smallBlueButtonStyle}>
+                    <button onClick={() => void createFolder()} style={smallBlueButtonStyle}>
                       {t.createFolder}
                     </button>
 
@@ -622,7 +617,7 @@ function LiveClassesContent() {
                         </button>
 
                         <button
-                          onClick={() => deleteFolder(folder.id)}
+                          onClick={() => void deleteFolder(folder.id)}
                           style={deleteMenuItemStyle}
                         >
                           {t.delete}
@@ -648,7 +643,7 @@ function LiveClassesContent() {
                     />
 
                     <div style={buttonRowStyle}>
-                      <button onClick={saveRenameFolder} style={smallBlueButtonStyle}>
+                      <button onClick={() => void saveRenameFolder()} style={smallBlueButtonStyle}>
                         {t.save}
                       </button>
 
@@ -681,9 +676,7 @@ function LiveClassesContent() {
                       accept="image/*"
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
-
                         if (!file) return;
-
                         const dataUrl = await fileToDataUrl(file);
                         setEditBgImage(dataUrl);
                       }}
@@ -692,7 +685,7 @@ function LiveClassesContent() {
 
                     <div style={buttonRowStyle}>
                       <button
-                        onClick={saveBackgroundChange}
+                        onClick={() => void saveBackgroundChange()}
                         style={smallBlueButtonStyle}
                       >
                         {t.save}
@@ -742,7 +735,7 @@ function LiveClassesContent() {
                 style={inputStyle}
               />
 
-              <button onClick={addClass} className="live-action-btn" style={mainButtonStyle}>
+              <button onClick={() => void addClass()} className="live-action-btn" style={mainButtonStyle}>
                 {t.saveClass}
               </button>
             </section>
@@ -774,14 +767,14 @@ function LiveClassesContent() {
                   {isAdmin && (
                     <>
                       <button
-                        onClick={() => toggleClassVisibility(item.id)}
+                        onClick={() => void toggleClassVisibility(item.id)}
                         style={smallGreenButtonStyle}
                       >
                         {item.visible ? t.hidden : t.visible}
                       </button>
 
                       <button
-                        onClick={() => deleteClass(item.id)}
+                        onClick={() => void deleteClass(item.id)}
                         style={smallRedButtonStyle}
                       >
                         {t.delete}
@@ -797,6 +790,7 @@ function LiveClassesContent() {
     </main>
   );
 }
+
 export default function LiveClassesPage() {
   return (
     <Suspense fallback={<main style={loadingStyle}>Loading Live Classes...</main>}>
@@ -813,26 +807,6 @@ function getFolderBackground(folder: FolderType) {
   return `linear-gradient(135deg, ${
     folder.backgroundColor || "#ef4444"
   }, #f97316, #2563eb)`;
-}
-
-function readFirstLocalStorageList<T>(keys: string[]): T[] {
-  for (const key of keys) {
-    try {
-      const value = localStorage.getItem(key);
-
-      if (!value) continue;
-
-      const parsed = JSON.parse(value);
-
-      if (Array.isArray(parsed)) {
-        return parsed as T[];
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return [];
 }
 
 function fileToDataUrl(file: File): Promise<string> {
