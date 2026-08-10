@@ -5,33 +5,13 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { collection, doc, setDoc, getDocs, deleteDoc, updateDoc } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 import { useAppLanguage } from "@/hooks/useAppLanguage";
+import { sendNotificationToStudents } from "@/lib/sendNotification";
 
 const ADMIN_EMAIL = "successfulacademyofficial@gmail.com";
 const SELECTED_EXAM_KEY = "selected_exam_v1";
-
-const FOLDERS_KEY = "job_detail_folders_v5";
-const JOB_DETAILS_KEY = "job_details_title_value_v2";
-
-const OLD_FOLDER_KEYS = [
-  "job_detail_folders_v5",
-  "job_detail_folders_v4",
-  "job_detail_folders",
-  "job_detail_folders_v2",
-  "job_detail_folders_v1",
-];
-
-const OLD_DETAILS_KEYS = [
-  "job_details_title_value_v2",
-  "job_details_title_value_v1",
-  "job_dynamic_infos",
-  "job_dynamic_infos_v2",
-  "job_dynamic_infos_v1",
-];
-
-const PDF_DB_NAME = "successful_academy_jobs_db";
-const PDF_STORE_NAME = "job_pdfs";
 
 type InnerPage = "" | "pdf" | "details";
 
@@ -245,9 +225,7 @@ function JobsContent() {
   }, [folders, selectedExam]);
 
   const openedFolder = folders.find((item) => item.id === openedFolderId);
-
   const currentPdfs = jobPdfs.filter((item) => item.folderId === openedFolderId);
-
   const currentDetails = jobDetails.filter((item) => {
     if (item.folderId !== openedFolderId) return false;
     if (isAdmin) return true;
@@ -265,34 +243,29 @@ function JobsContent() {
       setSelectedExam(examFromStorage);
     }
 
-    const savedFolders = readFirstLocalStorageList<FolderType>(OLD_FOLDER_KEYS);
-    const savedDetailsRaw = readFirstLocalStorageList<any>(OLD_DETAILS_KEYS);
+    // Fetch data from Firebase Firestore
+    const fetchAllData = async () => {
+      try {
+        const foldSnap = await getDocs(collection(db, "job_folders"));
+        setFolders(foldSnap.docs.map(d => d.data() as FolderType).sort((a,b) => b.createdAt - a.createdAt));
 
-    const normalizedDetails: JobDetailItem[] = savedDetailsRaw.map((item) => ({
-      id: String(item.id || `${Date.now()}-${Math.random()}`),
-      folderId: String(item.folderId || ""),
-      title: String(item.title || ""),
-      value: String(item.value || item.description || ""),
-      visible: typeof item.visible === "boolean" ? item.visible : true,
-      createdAt: Number(item.createdAt || Date.now()),
-    }));
+        const pdfSnap = await getDocs(collection(db, "job_pdfs"));
+        setJobPdfs(pdfSnap.docs.map(d => d.data() as JobPdfItem).sort((a,b) => b.createdAt - a.createdAt));
 
-    setFolders(savedFolders);
-    setJobDetails(normalizedDetails);
+        const detSnap = await getDocs(collection(db, "job_details"));
+        setJobDetails(detSnap.docs.map(d => d.data() as JobDetailItem).sort((a,b) => b.createdAt - a.createdAt));
+      } catch (error) {
+        console.error("Firestore fetch error:", error);
+      }
+    };
 
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(savedFolders));
-    localStorage.setItem(JOB_DETAILS_KEY, JSON.stringify(normalizedDetails));
-
-    loadAllPdfsFromDb()
-      .then((items) => setJobPdfs(items))
-      .catch(() => setJobPdfs([]));
+    fetchAllData();
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) {
         router.push("/login");
         return;
       }
-
       setEmail(user.email || "");
       setCheckingUser(false);
     });
@@ -300,29 +273,17 @@ function JobsContent() {
     return () => unsubscribe();
   }, [router, searchParams]);
 
-  const saveFolders = (items: FolderType[]) => {
-    setFolders(items);
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(items));
-  };
-
-  const saveJobDetails = (items: JobDetailItem[]) => {
-    setJobDetails(items);
-    localStorage.setItem(JOB_DETAILS_KEY, JSON.stringify(items));
-  };
-
   const makeId = () => {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
       return crypto.randomUUID();
     }
-
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   };
 
-  const createFolder = () => {
+  const createFolder = async () => {
     if (!isAdmin) return;
 
     const cleanName = folderName.trim();
-
     if (!cleanName) {
       alert("Folder name likho.");
       return;
@@ -337,7 +298,15 @@ function JobsContent() {
       createdAt: Date.now(),
     };
 
-    saveFolders([newFolder, ...folders]);
+    try {
+      await setDoc(doc(db, "job_folders", newFolder.id), newFolder);
+      setFolders([newFolder, ...folders]);
+    } catch (error) {
+      console.error("Error creating folder:", error);
+      alert("Folder banane mein error aayi.");
+      return;
+    }
+
     setFolderName("");
     setFolderBgColor("#2563eb");
     setFolderBgImage("");
@@ -384,35 +353,36 @@ function JobsContent() {
 
   const openRenameBox = (folder: FolderType) => {
     if (!isAdmin) return;
-
     setRenameFolderId(folder.id);
     setRenameValue(folder.name);
     setBackgroundFolderId("");
     setMenuOpenId("");
   };
 
-  const saveRenameFolder = () => {
+  const saveRenameFolder = async () => {
     if (!isAdmin) return;
 
     const cleanName = renameValue.trim();
-
     if (!cleanName) {
       alert("Folder name likho.");
       return;
     }
 
-    const updated = folders.map((folder) =>
-      folder.id === renameFolderId ? { ...folder, name: cleanName } : folder
-    );
-
-    saveFolders(updated);
-    setRenameFolderId("");
-    setRenameValue("");
+    try {
+      await updateDoc(doc(db, "job_folders", renameFolderId), { name: cleanName });
+      const updated = folders.map((folder) =>
+        folder.id === renameFolderId ? { ...folder, name: cleanName } : folder
+      );
+      setFolders(updated);
+      setRenameFolderId("");
+      setRenameValue("");
+    } catch (error) {
+      console.error("Error renaming folder:", error);
+    }
   };
 
   const openBackgroundBox = (folder: FolderType) => {
     if (!isAdmin) return;
-
     setBackgroundFolderId(folder.id);
     setEditBgColor(folder.backgroundColor || "#2563eb");
     setEditBgImage(folder.backgroundImage || "");
@@ -420,45 +390,57 @@ function JobsContent() {
     setMenuOpenId("");
   };
 
-  const saveBackgroundChange = () => {
+  const saveBackgroundChange = async () => {
     if (!isAdmin) return;
 
-    const updated = folders.map((folder) =>
-      folder.id === backgroundFolderId
-        ? {
-            ...folder,
-            backgroundColor: editBgColor,
-            backgroundImage: editBgImage,
-          }
-        : folder
-    );
+    try {
+      await updateDoc(doc(db, "job_folders", backgroundFolderId), {
+        backgroundColor: editBgColor,
+        backgroundImage: editBgImage,
+      });
 
-    saveFolders(updated);
-    setBackgroundFolderId("");
-    setEditBgImage("");
+      const updated = folders.map((folder) =>
+        folder.id === backgroundFolderId
+          ? { ...folder, backgroundColor: editBgColor, backgroundImage: editBgImage }
+          : folder
+      );
+      setFolders(updated);
+      setBackgroundFolderId("");
+      setEditBgImage("");
+    } catch (error) {
+      console.error("Error changing background:", error);
+    }
   };
 
   const deleteFolder = async (folderId: string) => {
     if (!isAdmin) return;
-
     if (!confirm("Folder delete karna hai?")) return;
 
-    saveFolders(folders.filter((item) => item.id !== folderId));
-    saveJobDetails(jobDetails.filter((item) => item.folderId !== folderId));
+    try {
+      await deleteDoc(doc(db, "job_folders", folderId));
+      setFolders(folders.filter((item) => item.id !== folderId));
 
-    const deletingPdfs = jobPdfs.filter((item) => item.folderId === folderId);
+      // Delete Details
+      const deletingDetails = jobDetails.filter((item) => item.folderId === folderId);
+      for (const item of deletingDetails) {
+        await deleteDoc(doc(db, "job_details", item.id));
+      }
+      setJobDetails(jobDetails.filter((item) => item.folderId !== folderId));
 
-    for (const item of deletingPdfs) {
-      await deletePdfFromDb(item.id);
+      // Delete PDFs
+      const deletingPdfs = jobPdfs.filter((item) => item.folderId === folderId);
+      for (const item of deletingPdfs) {
+        await deleteDoc(doc(db, "job_pdfs", item.id));
+      }
+      setJobPdfs(jobPdfs.filter((item) => item.folderId !== folderId));
+
+      if (openedFolderId === folderId) {
+        goBackToFolders();
+      }
+      setMenuOpenId("");
+    } catch (error) {
+      console.error("Delete folder error:", error);
     }
-
-    setJobPdfs(jobPdfs.filter((item) => item.folderId !== folderId));
-
-    if (openedFolderId === folderId) {
-      goBackToFolders();
-    }
-
-    setMenuOpenId("");
   };
 
   const uploadPdf = async () => {
@@ -469,30 +451,62 @@ function JobsContent() {
       return;
     }
 
-    const dataUrl = await fileToDataUrl(pdfFile);
+    try {
+      alert("File upload ho rahi hai, kripya thoda intezaar karein... ⏳");
 
-    const item: JobPdfItem = {
-      id: makeId(),
-      folderId: openedFolderId,
-      title: pdfTitle.trim(),
-      fileName: pdfFile.name,
-      dataUrl,
-      createdAt: Date.now(),
-    };
+      const formData = new FormData();
+      formData.append("file", pdfFile);
+      formData.append("upload_preset", "successful_preset");
 
-    await savePdfToDb(item);
-    setJobPdfs([item, ...jobPdfs]);
-    setPdfTitle("");
-    setPdfFile(null);
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
+      const response = await fetch(
+        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
+        { method: "POST", body: formData }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error?.message || "Cloudinary upload failed");
+      }
+
+      const item: JobPdfItem = {
+        id: makeId(),
+        folderId: openedFolderId,
+        title: pdfTitle.trim(),
+        fileName: pdfFile.name,
+        dataUrl: data.secure_url,
+        createdAt: Date.now(),
+      };
+
+      await setDoc(doc(db, "job_pdfs", item.id), item);
+      setJobPdfs([item, ...jobPdfs]);
+      setPdfTitle("");
+      setPdfFile(null);
+
+      alert("Wah! PDF successfully upload ho gayi 🚀");
+
+      void sendNotificationToStudents({
+        title: "Successful Academy Official",
+        body: "New Job Notification / PDF uploaded.",
+        url: `/jobs?exam=${encodeURIComponent(selectedExam)}`,
+      });
+    } catch (error) {
+      console.error("Upload Error:", error);
+      alert("Upload mein error aayi. Please dobara try karein.");
+    }
   };
 
   const deletePdf = async (id: string) => {
     if (!isAdmin) return;
-
     if (!confirm("PDF delete karna hai?")) return;
 
-    await deletePdfFromDb(id);
-    setJobPdfs(jobPdfs.filter((item) => item.id !== id));
+    try {
+      await deleteDoc(doc(db, "job_pdfs", id));
+      setJobPdfs(jobPdfs.filter((item) => item.id !== id));
+    } catch (error) {
+      console.error("Error deleting PDF:", error);
+    }
   };
 
   const addDetailToDraft = () => {
@@ -516,25 +530,22 @@ function JobsContent() {
 
   const removeDraftDetail = (id: string) => {
     if (!isAdmin) return;
-
     setDraftDetails(draftDetails.filter((item) => item.id !== id));
   };
 
-  const saveAllDetails = () => {
+  const saveAllDetails = async () => {
     if (!isAdmin) return;
-
     if (!openedFolderId) {
       alert("Folder open karo.");
       return;
     }
-
     if (draftDetails.length === 0) {
       alert("Kam se kam 1 title aur value add karo.");
       return;
     }
 
     const newDetails: JobDetailItem[] = draftDetails.map((item) => ({
-      id: makeId(),
+      id: item.id,
       folderId: openedFolderId,
       title: item.title,
       value: item.value,
@@ -542,29 +553,67 @@ function JobsContent() {
       createdAt: Date.now(),
     }));
 
-    saveJobDetails([...newDetails, ...jobDetails]);
-    setDraftDetails([]);
-    setDetailTitle("");
-    setDetailValue("");
-    setShowAddDetail(false);
+    try {
+      for (const detail of newDetails) {
+        await setDoc(doc(db, "job_details", detail.id), detail);
+      }
+      setJobDetails([...newDetails, ...jobDetails]);
+      setDraftDetails([]);
+      setDetailTitle("");
+      setDetailValue("");
+      setShowAddDetail(false);
+
+      void sendNotificationToStudents({
+        title: "Successful Academy Official",
+        body: "New Job Details updated.",
+        url: `/jobs?exam=${encodeURIComponent(selectedExam)}`,
+      });
+    } catch (error) {
+      console.error("Error saving details:", error);
+    }
   };
 
-  const toggleDetailVisibility = (id: string) => {
+  const toggleDetailVisibility = async (id: string) => {
     if (!isAdmin) return;
 
-    const updated = jobDetails.map((item) =>
-      item.id === id ? { ...item, visible: !item.visible } : item
-    );
+    const item = jobDetails.find((i) => i.id === id);
+    if (!item) return;
 
-    saveJobDetails(updated);
+    try {
+      await updateDoc(doc(db, "job_details", id), { visible: !item.visible });
+      const updated = jobDetails.map((d) =>
+        d.id === id ? { ...d, visible: !d.visible } : d
+      );
+      setJobDetails(updated);
+    } catch (error) {
+      console.error("Error toggling detail visibility:", error);
+    }
   };
 
-  const deleteDetail = (id: string) => {
+  const deleteDetail = async (id: string) => {
     if (!isAdmin) return;
-
     if (!confirm("Details delete karna hai?")) return;
 
-    saveJobDetails(jobDetails.filter((item) => item.id !== id));
+    try {
+      await deleteDoc(doc(db, "job_details", id));
+      setJobDetails(jobDetails.filter((item) => item.id !== id));
+    } catch (error) {
+      console.error("Error deleting detail:", error);
+    }
+  };
+
+  const viewPdfFile = (item: JobPdfItem) => {
+    window.open(item.dataUrl, "_blank", "noopener,noreferrer");
+  };
+
+  const downloadPdfFile = (item: JobPdfItem) => {
+    const link = document.createElement("a");
+    link.href = item.dataUrl;
+    link.download = item.fileName || `${item.title || "job-details"}.pdf`;
+    link.target = "_blank";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   if (checkingUser) {
@@ -633,9 +682,7 @@ function JobsContent() {
                     accept="image/*"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
-
                       if (!file) return;
-
                       const dataUrl = await fileToDataUrl(file);
                       setFolderBgImage(dataUrl);
                     }}
@@ -643,7 +690,7 @@ function JobsContent() {
                   />
 
                   <div style={buttonRowStyle}>
-                    <button onClick={createFolder} style={smallBlueButtonStyle}>
+                    <button onClick={() => void createFolder()} style={smallBlueButtonStyle}>
                       {t.createFolder}
                     </button>
 
@@ -731,7 +778,7 @@ function JobsContent() {
                     />
 
                     <div style={buttonRowStyle}>
-                      <button onClick={saveRenameFolder} style={smallBlueButtonStyle}>
+                      <button onClick={() => void saveRenameFolder()} style={smallBlueButtonStyle}>
                         {t.save}
                       </button>
 
@@ -764,9 +811,7 @@ function JobsContent() {
                       accept="image/*"
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
-
                         if (!file) return;
-
                         const dataUrl = await fileToDataUrl(file);
                         setEditBgImage(dataUrl);
                       }}
@@ -775,7 +820,7 @@ function JobsContent() {
 
                     <div style={buttonRowStyle}>
                       <button
-                        onClick={saveBackgroundChange}
+                        onClick={() => void saveBackgroundChange()}
                         style={smallBlueButtonStyle}
                       >
                         {t.save}
@@ -853,7 +898,7 @@ function JobsContent() {
               <label style={labelStyle}>{t.choosePdf}</label>
               <input
                 type="file"
-                accept="application/pdf"
+                accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.jpg,.jpeg,.png,.webp,.txt,.zip"
                 onChange={(e) => setPdfFile(e.target.files?.[0] || null)}
                 style={inputStyle}
               />
@@ -981,7 +1026,7 @@ function JobsContent() {
               )}
 
               <div style={buttonRowStyle}>
-                <button onClick={saveAllDetails} style={smallBlueButtonStyle}>
+                <button onClick={() => void saveAllDetails()} style={smallBlueButtonStyle}>
                   {t.saveAllDetails}
                 </button>
 
@@ -1018,14 +1063,14 @@ function JobsContent() {
 
                     <div style={buttonRowStyle}>
                       <button
-                        onClick={() => toggleDetailVisibility(item.id)}
+                        onClick={() => void toggleDetailVisibility(item.id)}
                         style={smallGreenButtonStyle}
                       >
                         {item.visible ? t.hidden : t.visible}
                       </button>
 
                       <button
-                        onClick={() => deleteDetail(item.id)}
+                        onClick={() => void deleteDetail(item.id)}
                         style={smallRedButtonStyle}
                       >
                         {t.delete}
@@ -1058,137 +1103,6 @@ function getFolderBackground(folder: FolderType) {
   return `linear-gradient(135deg, ${
     folder.backgroundColor || "#2563eb"
   }, #7c3aed, #14b8a6)`;
-}
-
-function readFirstLocalStorageList<T>(keys: string[]): T[] {
-  for (const key of keys) {
-    try {
-      const value = localStorage.getItem(key);
-
-      if (!value) continue;
-
-      const parsed = JSON.parse(value);
-
-      if (Array.isArray(parsed)) {
-        return parsed as T[];
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return [];
-}
-
-function openPdfDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(PDF_DB_NAME, 1);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-
-      if (!db.objectStoreNames.contains(PDF_STORE_NAME)) {
-        db.createObjectStore(PDF_STORE_NAME, {
-          keyPath: "id",
-        });
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function savePdfToDb(item: JobPdfItem) {
-  const db = await openPdfDb();
-
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(PDF_STORE_NAME, "readwrite");
-    const store = tx.objectStore(PDF_STORE_NAME);
-
-    store.put(item);
-
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-
-  db.close();
-}
-
-async function deletePdfFromDb(id: string) {
-  const db = await openPdfDb();
-
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(PDF_STORE_NAME, "readwrite");
-    const store = tx.objectStore(PDF_STORE_NAME);
-
-    store.delete(id);
-
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-
-  db.close();
-}
-
-async function loadAllPdfsFromDb(): Promise<JobPdfItem[]> {
-  const db = await openPdfDb();
-
-  const items = await new Promise<JobPdfItem[]>((resolve, reject) => {
-    const tx = db.transaction(PDF_STORE_NAME, "readonly");
-    const store = tx.objectStore(PDF_STORE_NAME);
-    const request = store.getAll();
-
-    request.onsuccess = () => resolve(request.result as JobPdfItem[]);
-    request.onerror = () => reject(request.error);
-  });
-
-  db.close();
-
-  return items.sort((a, b) => b.createdAt - a.createdAt);
-}
-
-function dataUrlToBlob(dataUrl: string) {
-  const [header = "", base64Data = ""] = dataUrl.split(",");
-  const mimeMatch = header.match(/:(.*?);/);
-  const mime = mimeMatch?.[1] || "application/pdf";
-
-  const byteString = atob(base64Data);
-  const arrayBuffer = new ArrayBuffer(byteString.length);
-  const uint8Array = new Uint8Array(arrayBuffer);
-
-  for (let i = 0; i < byteString.length; i += 1) {
-    uint8Array[i] = byteString.charCodeAt(i);
-  }
-
-  return new Blob([arrayBuffer], { type: mime });
-}
-
-function viewPdfFile(item: JobPdfItem) {
-  const blob = dataUrlToBlob(item.dataUrl);
-  const blobUrl = URL.createObjectURL(blob);
-
-  window.open(blobUrl, "_blank", "noopener,noreferrer");
-
-  setTimeout(() => {
-    URL.revokeObjectURL(blobUrl);
-  }, 60000);
-}
-
-function downloadPdfFile(item: JobPdfItem) {
-  const blob = dataUrlToBlob(item.dataUrl);
-  const blobUrl = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-  link.href = blobUrl;
-  link.download = item.fileName || `${item.title || "job-details"}.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-
-  setTimeout(() => {
-    URL.revokeObjectURL(blobUrl);
-  }, 60000);
 }
 
 function fileToDataUrl(file: File): Promise<string> {
