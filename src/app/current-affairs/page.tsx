@@ -5,43 +5,13 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase"; // Added db here
+import { collection, doc, setDoc, deleteDoc, getDocs } from "firebase/firestore"; // Added Firestore methods
 import { useAppLanguage } from "@/hooks/useAppLanguage";
 import { sendNotificationToStudents } from "@/lib/sendNotification";
 
 const ADMIN_EMAIL = "successfulacademyofficial@gmail.com";
 const SELECTED_EXAM_KEY = "selected_exam_v1";
-
-const NOTE_FOLDERS_KEY = "current_affairs_note_folders_v7";
-const VIDEO_FOLDERS_KEY = "current_affairs_video_folders_v7";
-const VIDEO_ITEMS_KEY = "current_affairs_video_items_v7";
-
-const OLD_NOTE_KEYS = [
-  "current_affairs_note_folders_v7",
-  "current_affairs_note_folders_v6",
-  "current_affairs_note_folders_v5",
-  "current_affairs_note_folders_v4",
-  "current_affairs_note_folders_v3",
-];
-
-const OLD_VIDEO_FOLDER_KEYS = [
-  "current_affairs_video_folders_v7",
-  "current_affairs_video_folders_v6",
-  "current_affairs_video_folders_v5",
-  "current_affairs_video_folders_v4",
-  "current_affairs_video_folders_v3",
-];
-
-const OLD_VIDEO_ITEM_KEYS = [
-  "current_affairs_video_items_v7",
-  "current_affairs_video_items_v6",
-  "current_affairs_video_items_v5",
-  "current_affairs_video_items_v4",
-  "current_affairs_video_items_v3",
-];
-
-const PDF_DB_NAME = "successful_academy_current_affairs_db";
-const PDF_STORE_NAME = "current_affairs_pdfs";
 
 type FolderType = {
   id: string;
@@ -240,9 +210,7 @@ function CurrentAffairsContent() {
   }, [currentFolders, selectedExam]);
 
   const openedFolder = currentFolders.find((item) => item.id === openedFolderId);
-
   const currentPdfs = pdfItems.filter((item) => item.folderId === openedFolderId);
-
   const currentVideos = videoItems.filter((item) => {
     if (item.folderId !== openedFolderId) return false;
     if (isAdmin) return true;
@@ -260,29 +228,48 @@ function CurrentAffairsContent() {
       setSelectedExam(examFromStorage);
     }
 
-    const savedNoteFolders = readFirstLocalStorageList<FolderType>(OLD_NOTE_KEYS);
-    const savedVideoFolders =
-      readFirstLocalStorageList<FolderType>(OLD_VIDEO_FOLDER_KEYS);
-    const savedVideos = readFirstLocalStorageList<VideoItem>(OLD_VIDEO_ITEM_KEYS);
+    // Fetching data from Firestore Database
+    const fetchFirebaseData = async () => {
+      try {
+        const [notesSnap, vFoldersSnap, pdfsSnap, vItemsSnap] = await Promise.all([
+          getDocs(collection(db, "ca_noteFolders")),
+          getDocs(collection(db, "ca_videoFolders")),
+          getDocs(collection(db, "ca_pdfItems")),
+          getDocs(collection(db, "ca_videoItems")),
+        ]);
 
-    setNoteFolders(savedNoteFolders);
-    setVideoFolders(savedVideoFolders);
-    setVideoItems(savedVideos);
+        setNoteFolders(
+          notesSnap.docs
+            .map((d) => d.data() as FolderType)
+            .sort((a, b) => b.createdAt - a.createdAt)
+        );
+        setVideoFolders(
+          vFoldersSnap.docs
+            .map((d) => d.data() as FolderType)
+            .sort((a, b) => b.createdAt - a.createdAt)
+        );
+        setPdfItems(
+          pdfsSnap.docs
+            .map((d) => d.data() as PdfItem)
+            .sort((a, b) => b.createdAt - a.createdAt)
+        );
+        setVideoItems(
+          vItemsSnap.docs
+            .map((d) => d.data() as VideoItem)
+            .sort((a, b) => b.createdAt - a.createdAt)
+        );
+      } catch (error) {
+        console.error("Error loading data from Firestore:", error);
+      }
+    };
 
-    localStorage.setItem(NOTE_FOLDERS_KEY, JSON.stringify(savedNoteFolders));
-    localStorage.setItem(VIDEO_FOLDERS_KEY, JSON.stringify(savedVideoFolders));
-    localStorage.setItem(VIDEO_ITEMS_KEY, JSON.stringify(savedVideos));
-
-    loadAllPdfsFromDb()
-      .then((items) => setPdfItems(items))
-      .catch(() => setPdfItems([]));
+    fetchFirebaseData();
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) {
         router.push("/login");
         return;
       }
-
       setEmail(user.email || "");
       setCheckingUser(false);
     });
@@ -290,42 +277,17 @@ function CurrentAffairsContent() {
     return () => unsubscribe();
   }, [router, searchParams]);
 
-  const saveNoteFolders = (items: FolderType[]) => {
-    setNoteFolders(items);
-    localStorage.setItem(NOTE_FOLDERS_KEY, JSON.stringify(items));
-  };
-
-  const saveVideoFolders = (items: FolderType[]) => {
-    setVideoFolders(items);
-    localStorage.setItem(VIDEO_FOLDERS_KEY, JSON.stringify(items));
-  };
-
-  const saveCurrentFolders = (items: FolderType[]) => {
-    if (activeTab === "notes") {
-      saveNoteFolders(items);
-    } else {
-      saveVideoFolders(items);
-    }
-  };
-
-  const saveVideoItems = (items: VideoItem[]) => {
-    setVideoItems(items);
-    localStorage.setItem(VIDEO_ITEMS_KEY, JSON.stringify(items));
-  };
-
   const makeId = () => {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
       return crypto.randomUUID();
     }
-
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   };
 
-  const createFolder = () => {
+  const createFolder = async () => {
     if (!isAdmin) return;
 
     const cleanName = folderName.trim();
-
     if (!cleanName) {
       alert("Please enter a folder name.");
       return;
@@ -341,9 +303,11 @@ function CurrentAffairsContent() {
     };
 
     if (activeTab === "notes") {
-      saveNoteFolders([newFolder, ...noteFolders]);
+      setNoteFolders([newFolder, ...noteFolders]);
+      await setDoc(doc(db, "ca_noteFolders", newFolder.id), newFolder).catch(console.error);
     } else {
-      saveVideoFolders([newFolder, ...videoFolders]);
+      setVideoFolders([newFolder, ...videoFolders]);
+      await setDoc(doc(db, "ca_videoFolders", newFolder.id), newFolder).catch(console.error);
     }
 
     setFolderName("");
@@ -354,35 +318,38 @@ function CurrentAffairsContent() {
 
   const openRenameBox = (folder: FolderType) => {
     if (!isAdmin) return;
-
     setRenameFolderId(folder.id);
     setRenameValue(folder.name);
     setBackgroundFolderId("");
     setMenuOpenId("");
   };
 
-  const saveRenameFolder = () => {
+  const saveRenameFolder = async () => {
     if (!isAdmin) return;
-
     const cleanName = renameValue.trim();
-
     if (!cleanName) {
       alert("Please enter a folder name.");
       return;
     }
 
-    const updated = currentFolders.map((folder) =>
-      folder.id === renameFolderId ? { ...folder, name: cleanName } : folder
-    );
+    const targetFolder = currentFolders.find((f) => f.id === renameFolderId);
+    if (targetFolder) {
+      const updatedFolder = { ...targetFolder, name: cleanName };
 
-    saveCurrentFolders(updated);
+      if (activeTab === "notes") {
+        setNoteFolders(noteFolders.map((f) => (f.id === renameFolderId ? updatedFolder : f)));
+        await setDoc(doc(db, "ca_noteFolders", renameFolderId), updatedFolder).catch(console.error);
+      } else {
+        setVideoFolders(videoFolders.map((f) => (f.id === renameFolderId ? updatedFolder : f)));
+        await setDoc(doc(db, "ca_videoFolders", renameFolderId), updatedFolder).catch(console.error);
+      }
+    }
     setRenameFolderId("");
     setRenameValue("");
   };
 
   const openBackgroundBox = (folder: FolderType) => {
     if (!isAdmin) return;
-
     setBackgroundFolderId(folder.id);
     setEditBgColor(folder.backgroundColor || "#2563eb");
     setEditBgImage(folder.backgroundImage || "");
@@ -390,48 +357,56 @@ function CurrentAffairsContent() {
     setMenuOpenId("");
   };
 
-  const saveBackgroundChange = () => {
+  const saveBackgroundChange = async () => {
     if (!isAdmin) return;
+    const targetFolder = currentFolders.find((f) => f.id === backgroundFolderId);
+    
+    if (targetFolder) {
+      const updatedFolder = {
+        ...targetFolder,
+        backgroundColor: editBgColor,
+        backgroundImage: editBgImage,
+      };
 
-    const updated = currentFolders.map((folder) =>
-      folder.id === backgroundFolderId
-        ? {
-            ...folder,
-            backgroundColor: editBgColor,
-            backgroundImage: editBgImage,
-          }
-        : folder
-    );
-
-    saveCurrentFolders(updated);
+      if (activeTab === "notes") {
+        setNoteFolders(noteFolders.map((f) => (f.id === backgroundFolderId ? updatedFolder : f)));
+        await setDoc(doc(db, "ca_noteFolders", backgroundFolderId), updatedFolder).catch(console.error);
+      } else {
+        setVideoFolders(videoFolders.map((f) => (f.id === backgroundFolderId ? updatedFolder : f)));
+        await setDoc(doc(db, "ca_videoFolders", backgroundFolderId), updatedFolder).catch(console.error);
+      }
+    }
     setBackgroundFolderId("");
     setEditBgImage("");
   };
 
   const deleteFolder = async (folderId: string) => {
     if (!isAdmin) return;
-
     if (!confirm("Do you want to delete this folder?")) return;
 
     if (activeTab === "notes") {
-      saveNoteFolders(noteFolders.filter((item) => item.id !== folderId));
+      setNoteFolders(noteFolders.filter((item) => item.id !== folderId));
+      await deleteDoc(doc(db, "ca_noteFolders", folderId)).catch(console.error);
 
       const deletingPdfs = pdfItems.filter((item) => item.folderId === folderId);
-
       for (const item of deletingPdfs) {
-        await deletePdfFromDb(item.id);
+        await deleteDoc(doc(db, "ca_pdfItems", item.id)).catch(console.error);
       }
-
       setPdfItems(pdfItems.filter((item) => item.folderId !== folderId));
     } else {
-      saveVideoFolders(videoFolders.filter((item) => item.id !== folderId));
-      saveVideoItems(videoItems.filter((item) => item.folderId !== folderId));
+      setVideoFolders(videoFolders.filter((item) => item.id !== folderId));
+      await deleteDoc(doc(db, "ca_videoFolders", folderId)).catch(console.error);
+
+      const deletingVideos = videoItems.filter((item) => item.folderId === folderId);
+      for (const item of deletingVideos) {
+        await deleteDoc(doc(db, "ca_videoItems", item.id)).catch(console.error);
+      }
+      setVideoItems(videoItems.filter((item) => item.folderId !== folderId));
     }
 
     if (openedFolderId === folderId) {
       setOpenedFolderId("");
     }
-
     setMenuOpenId("");
   };
 
@@ -451,7 +426,7 @@ function CurrentAffairsContent() {
     setVideoLink("");
   };
 
-const uploadPdf = async () => {
+  const uploadPdf = async () => {
     if (!isAdmin) return;
 
     if (!pdfTitle.trim() || !pdfFile || !openedFolderId) {
@@ -460,26 +435,11 @@ const uploadPdf = async () => {
     }
 
     const allowedExtensions = [
-      ".pdf",
-      ".doc",
-      ".docx",
-      ".ppt",
-      ".pptx",
-      ".xls",
-      ".xlsx",
-      ".jpg",
-      ".jpeg",
-      ".png",
-      ".webp",
-      ".txt",
-      ".zip",
+      ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+      ".jpg", ".jpeg", ".png", ".webp", ".txt", ".zip",
     ];
-
     const lowerFileName = pdfFile.name.toLowerCase();
-
-    const allowedFile = allowedExtensions.some((ext) =>
-      lowerFileName.endsWith(ext)
-    );
+    const allowedFile = allowedExtensions.some((ext) => lowerFileName.endsWith(ext));
 
     if (!allowedFile) {
       alert("Please upload PDF, Word, PowerPoint, Excel, image, text or zip file.");
@@ -487,46 +447,38 @@ const uploadPdf = async () => {
     }
 
     try {
-      // 1. Loading shuru (User ko batane ke liye)
       alert("File upload ho rahi hai, kripya thoda intezaar karein... ⏳");
 
-      // 2. Cloudinary ke liye file aur Gate Pass ka packet banana
       const formData = new FormData();
       formData.append("file", pdfFile);
-      formData.append("upload_preset", "successful_preset"); // Aapka Cloudinary Gate Pass
+      formData.append("upload_preset", "successful_preset");
 
-      // 3. Cloudinary Godown mein file bhejna
       const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
       const response = await fetch(
         `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
-        {
-          method: "POST",
-          body: formData,
-        }
+        { method: "POST", body: formData }
       );
 
       const data = await response.json();
-
       if (!response.ok) {
         throw new Error(data.error?.message || "Cloudinary upload failed");
       }
 
-      // 4. Asli Cloudinary URL ko aapke folder mein save karna
-      const item = {
+      const item: PdfItem = {
         id: makeId(),
         folderId: openedFolderId,
         title: pdfTitle.trim(),
         fileName: pdfFile.name,
-        dataUrl: data.secure_url, // Jaadu yahan hai! Asli Live Link
+        dataUrl: data.secure_url,
         createdAt: Date.now(),
       };
 
-      await savePdfToDb(item);
-
+      // Save to Firebase Database
+      await setDoc(doc(db, "ca_pdfItems", item.id), item);
       setPdfItems([item, ...pdfItems]);
+
       setPdfTitle("");
       setPdfFile(null);
-
       alert("Wah! File successfully upload ho gayi 🚀");
 
       void sendNotificationToStudents({
@@ -542,57 +494,58 @@ const uploadPdf = async () => {
 
   const deletePdf = async (id: string) => {
     if (!isAdmin) return;
-
     if (!confirm("File delete karna hai?")) return;
 
-    await deletePdfFromDb(id);
+    await deleteDoc(doc(db, "ca_pdfItems", id)).catch(console.error);
     setPdfItems(pdfItems.filter((item) => item.id !== id));
   };
 
   const addVideo = async () => {
-  if (!isAdmin) return;
-
-  if (!videoTitle.trim() || !videoLink.trim() || !openedFolderId) {
-    alert("Please enter a video title and link.");
-    return;
-  }
-
-  const item: VideoItem = {
-    id: makeId(),
-    folderId: openedFolderId,
-    title: videoTitle.trim(),
-    link: videoLink.trim(),
-    visible: true,
-    createdAt: Date.now(),
-  };
-
-  saveVideoItems([item, ...videoItems]);
-  setVideoTitle("");
-  setVideoLink("");
-
-  void sendNotificationToStudents({
-    title: "Successful Academy Official",
-    body: "New Current Affairs Videos uploaded.",
-    url: `/current-affairs?exam=${encodeURIComponent(selectedExam)}`,
-  });
-};
-
-  const toggleVideoVisibility = (id: string) => {
     if (!isAdmin) return;
 
-    const updated = videoItems.map((item) =>
-      item.id === id ? { ...item, visible: !item.visible } : item
-    );
+    if (!videoTitle.trim() || !videoLink.trim() || !openedFolderId) {
+      alert("Please enter a video title and link.");
+      return;
+    }
 
-    saveVideoItems(updated);
+    const item: VideoItem = {
+      id: makeId(),
+      folderId: openedFolderId,
+      title: videoTitle.trim(),
+      link: videoLink.trim(),
+      visible: true,
+      createdAt: Date.now(),
+    };
+
+    await setDoc(doc(db, "ca_videoItems", item.id), item).catch(console.error);
+    setVideoItems([item, ...videoItems]);
+    setVideoTitle("");
+    setVideoLink("");
+
+    void sendNotificationToStudents({
+      title: "Successful Academy Official",
+      body: "New Current Affairs Videos uploaded.",
+      url: `/current-affairs?exam=${encodeURIComponent(selectedExam)}`,
+    });
   };
 
-  const deleteVideo = (id: string) => {
+  const toggleVideoVisibility = async (id: string) => {
     if (!isAdmin) return;
+    const target = videoItems.find((i) => i.id === id);
+    
+    if (target) {
+      const updated = { ...target, visible: !target.visible };
+      setVideoItems(videoItems.map((item) => (item.id === id ? updated : item)));
+      await setDoc(doc(db, "ca_videoItems", id), updated).catch(console.error);
+    }
+  };
 
+  const deleteVideo = async (id: string) => {
+    if (!isAdmin) return;
     if (!confirm("Video delete karna hai?")) return;
 
-    saveVideoItems(videoItems.filter((item) => item.id !== id));
+    await deleteDoc(doc(db, "ca_videoItems", id)).catch(console.error);
+    setVideoItems(videoItems.filter((item) => item.id !== id));
   };
 
   const changeTab = (tab: "notes" | "videos") => {
@@ -686,9 +639,7 @@ const uploadPdf = async () => {
                     accept="image/*"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
-
                       if (!file) return;
-
                       const dataUrl = await fileToDataUrl(file);
                       setFolderBgImage(dataUrl);
                     }}
@@ -817,9 +768,7 @@ const uploadPdf = async () => {
                       accept="image/*"
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
-
                         if (!file) return;
-
                         const dataUrl = await fileToDataUrl(file);
                         setEditBgImage(dataUrl);
                       }}
@@ -902,19 +851,19 @@ const uploadPdf = async () => {
 
                     <div style={buttonRowStyle}>
                       <button
-  onClick={() => setViewerFile(item)}
-  style={smallLinkButtonStyle}
->
-  View File
-</button>
+                        onClick={() => setViewerFile(item)}
+                        style={smallLinkButtonStyle}
+                      >
+                        View File
+                      </button>
 
-<a
-  href={item.dataUrl}
-  download={item.fileName}
-  style={{ ...smallGreenButtonStyle, textDecoration: "none" }}
->
-  Download
-</a>
+                      <a
+                        href={item.dataUrl}
+                        download={item.fileName}
+                        style={{ ...smallGreenButtonStyle, textDecoration: "none" }}
+                      >
+                        Download
+                      </a>
 
                       {isAdmin && (
                         <button
@@ -1009,59 +958,59 @@ const uploadPdf = async () => {
       )}
 
       {viewerFile && (
-  <section style={viewerOverlayStyle}>
-    <div style={viewerBoxStyle}>
-      <div style={viewerHeaderStyle}>
-        <h2 style={{ margin: 0, color: "#1e3a8a" }}>
-          {viewerFile.title}
-        </h2>
+        <section style={viewerOverlayStyle}>
+          <div style={viewerBoxStyle}>
+            <div style={viewerHeaderStyle}>
+              <h2 style={{ margin: 0, color: "#1e3a8a" }}>
+                {viewerFile.title}
+              </h2>
 
-        <button
-          onClick={() => setViewerFile(null)}
-          style={smallRedButtonStyle}
-        >
-          Close
-        </button>
-      </div>
+              <button
+                onClick={() => setViewerFile(null)}
+                style={smallRedButtonStyle}
+              >
+                Close
+              </button>
+            </div>
 
-      <p style={{ color: "#64748b", fontWeight: "bold" }}>
-        {viewerFile.fileName}
-      </p>
+            <p style={{ color: "#64748b", fontWeight: "bold" }}>
+              {viewerFile.fileName}
+            </p>
 
-      {canPreviewFile(viewerFile.fileName) ? (
-        isImageFile(viewerFile.fileName) ? (
-          <img
-            src={viewerFile.dataUrl}
-            alt={viewerFile.title}
-            style={viewerImageStyle}
-          />
-        ) : (
-          <iframe
-            src={viewerFile.dataUrl}
-            style={viewerFrameStyle}
-            title={viewerFile.title}
-          />
-        )
-      ) : (
-        <div style={viewerNotSupportedStyle}>
-          <h3>Preview available nahi hai</h3>
-          <p>
-            Word, PowerPoint aur Excel file browser me direct view nahi hota.
-            Download button se file open karo.
-          </p>
+            {canPreviewFile(viewerFile.fileName) ? (
+              isImageFile(viewerFile.fileName) ? (
+                <img
+                  src={viewerFile.dataUrl}
+                  alt={viewerFile.title}
+                  style={viewerImageStyle}
+                />
+              ) : (
+                <iframe
+                  src={viewerFile.dataUrl}
+                  style={viewerFrameStyle}
+                  title={viewerFile.title}
+                />
+              )
+            ) : (
+              <div style={viewerNotSupportedStyle}>
+                <h3>Preview available nahi hai</h3>
+                <p>
+                  Word, PowerPoint aur Excel file browser me direct view nahi hota.
+                  Download button se file open karo.
+                </p>
 
-          <a
-            href={viewerFile.dataUrl}
-            download={viewerFile.fileName}
-            style={{ ...smallGreenButtonStyle, textDecoration: "none" }}
-          >
-            Download File
-          </a>
-        </div>
+                <a
+                  href={viewerFile.dataUrl}
+                  download={viewerFile.fileName}
+                  style={{ ...smallGreenButtonStyle, textDecoration: "none" }}
+                >
+                  Download File
+                </a>
+              </div>
+            )}
+          </div>
+        </section>
       )}
-    </div>
-  </section>
-)}
     </main>
   );
 }
@@ -1082,94 +1031,6 @@ function getFolderBackground(folder: FolderType) {
   return `linear-gradient(135deg, ${
     folder.backgroundColor || "#38bdf8"
   }, #2563eb, #8b5cf6)`;
-}
-
-function readFirstLocalStorageList<T>(keys: string[]): T[] {
-  for (const key of keys) {
-    try {
-      const value = localStorage.getItem(key);
-
-      if (!value) continue;
-
-      const parsed = JSON.parse(value);
-
-      if (Array.isArray(parsed)) {
-        return parsed as T[];
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return [];
-}
-
-function openPdfDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(PDF_DB_NAME, 1);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-
-      if (!db.objectStoreNames.contains(PDF_STORE_NAME)) {
-        db.createObjectStore(PDF_STORE_NAME, {
-          keyPath: "id",
-        });
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function savePdfToDb(item: PdfItem) {
-  const db = await openPdfDb();
-
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(PDF_STORE_NAME, "readwrite");
-    const store = tx.objectStore(PDF_STORE_NAME);
-
-    store.put(item);
-
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-
-  db.close();
-}
-
-async function deletePdfFromDb(id: string) {
-  const db = await openPdfDb();
-
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(PDF_STORE_NAME, "readwrite");
-    const store = tx.objectStore(PDF_STORE_NAME);
-
-    store.delete(id);
-
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-
-  db.close();
-}
-
-async function loadAllPdfsFromDb(): Promise<PdfItem[]> {
-  const db = await openPdfDb();
-
-  const items = await new Promise<PdfItem[]>((resolve, reject) => {
-    const tx = db.transaction(PDF_STORE_NAME, "readonly");
-    const store = tx.objectStore(PDF_STORE_NAME);
-    const request = store.getAll();
-
-    request.onsuccess = () => resolve(request.result as PdfItem[]);
-    request.onerror = () => reject(request.error);
-  });
-
-  db.close();
-
-  return items.sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function fileToDataUrl(file: File): Promise<string> {
