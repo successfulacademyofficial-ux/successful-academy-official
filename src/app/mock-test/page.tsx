@@ -5,32 +5,13 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { collection, doc, setDoc, getDocs, deleteDoc, updateDoc } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 import { useAppLanguage } from "@/hooks/useAppLanguage";
 import { sendNotificationToStudents } from "@/lib/sendNotification";
 
 const ADMIN_EMAIL = "successfulacademyofficial@gmail.com";
 const SELECTED_EXAM_KEY = "selected_exam_v1";
-
-const FOLDERS_KEY = "mock_test_folders_colorful_v6";
-const SETS_KEY = "mock_test_sets_colorful_v5";
-
-const OLD_FOLDER_KEYS = [
-  "mock_test_folders_colorful_v6",
-  "mock_test_folders_colorful_v5",
-  "mock_test_folders_colorful_v4",
-  "mock_test_folders_colorful_v3",
-  "mock_test_folders_colorful_v2",
-  "mock_test_folders_colorful_v1",
-];
-
-const OLD_SET_KEYS = [
-  "mock_test_sets_colorful_v5",
-  "mock_test_sets_colorful_v4",
-  "mock_test_sets_colorful_v3",
-  "mock_test_sets_colorful_v2",
-  "mock_test_sets_colorful_v1",
-];
 
 type SubjectType = "gk" | "math" | "reasoning" | "mixed";
 type CorrectOption = "A" | "B" | "C" | "D";
@@ -351,21 +332,26 @@ function MockTestContent() {
       setSelectedExam(examFromStorage);
     }
 
-    const savedFolders = readFirstLocalStorageList<FolderType>(OLD_FOLDER_KEYS);
-    const savedSets = readFirstLocalStorageList<TestSetType>(OLD_SET_KEYS);
+    // Fetch data from Firebase Firestore
+    const fetchAllData = async () => {
+      try {
+        const foldSnap = await getDocs(collection(db, "mt_folders"));
+        setFolders(foldSnap.docs.map(d => d.data() as FolderType).sort((a,b) => b.createdAt - a.createdAt));
 
-    setFolders(savedFolders);
-    setTestSets(savedSets);
+        const setSnap = await getDocs(collection(db, "mt_sets"));
+        setTestSets(setSnap.docs.map(d => d.data() as TestSetType).sort((a,b) => b.createdAt - a.createdAt));
+      } catch (error) {
+        console.error("Firestore fetch error:", error);
+      }
+    };
 
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(savedFolders));
-    localStorage.setItem(SETS_KEY, JSON.stringify(savedSets));
+    fetchAllData();
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) {
         router.push("/login");
         return;
       }
-
       setEmail(user.email || "");
       setCheckingUser(false);
     });
@@ -400,29 +386,17 @@ function MockTestContent() {
     questionSecondsLeft,
   ]);
 
-  const saveFolders = (items: FolderType[]) => {
-    setFolders(items);
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(items));
-  };
-
-  const saveTestSets = (items: TestSetType[]) => {
-    setTestSets(items);
-    localStorage.setItem(SETS_KEY, JSON.stringify(items));
-  };
-
   const makeId = () => {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
       return crypto.randomUUID();
     }
-
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   };
 
-  const createFolder = () => {
+  const createFolder = async () => {
     if (!isAdmin) return;
 
     const cleanName = folderName.trim();
-
     if (!cleanName) {
       alert("Please enter a folder name.");
       return;
@@ -437,7 +411,15 @@ function MockTestContent() {
       createdAt: Date.now(),
     };
 
-    saveFolders([newFolder, ...folders]);
+    try {
+      await setDoc(doc(db, "mt_folders", newFolder.id), newFolder);
+      setFolders([newFolder, ...folders]);
+    } catch (error) {
+      console.error("Error creating folder:", error);
+      alert("Folder banane mein error aayi.");
+      return;
+    }
+
     setFolderName("");
     setFolderBgColor("#2563eb");
     setFolderBgImage("");
@@ -489,23 +471,26 @@ function MockTestContent() {
     setMenuOpenId("");
   };
 
-  const saveRenameFolder = () => {
+  const saveRenameFolder = async () => {
     if (!isAdmin) return;
 
     const cleanName = renameValue.trim();
-
     if (!cleanName) {
       alert("Please enter a folder name.");
       return;
     }
 
-    const updated = folders.map((folder) =>
-      folder.id === renameFolderId ? { ...folder, name: cleanName } : folder
-    );
-
-    saveFolders(updated);
-    setRenameFolderId("");
-    setRenameValue("");
+    try {
+      await updateDoc(doc(db, "mt_folders", renameFolderId), { name: cleanName });
+      const updated = folders.map((folder) =>
+        folder.id === renameFolderId ? { ...folder, name: cleanName } : folder
+      );
+      setFolders(updated);
+      setRenameFolderId("");
+      setRenameValue("");
+    } catch (error) {
+      console.error("Error renaming folder:", error);
+    }
   };
 
   const openBackgroundBox = (folder: FolderType) => {
@@ -518,33 +503,49 @@ function MockTestContent() {
     setMenuOpenId("");
   };
 
-  const saveBackgroundChange = () => {
+  const saveBackgroundChange = async () => {
     if (!isAdmin) return;
 
-    const updated = folders.map((folder) =>
-      folder.id === backgroundFolderId
-        ? { ...folder, backgroundColor: editBgColor, backgroundImage: editBgImage }
-        : folder
-    );
+    try {
+      await updateDoc(doc(db, "mt_folders", backgroundFolderId), {
+        backgroundColor: editBgColor,
+        backgroundImage: editBgImage,
+      });
 
-    saveFolders(updated);
-    setBackgroundFolderId("");
-    setEditBgImage("");
+      const updated = folders.map((folder) =>
+        folder.id === backgroundFolderId
+          ? { ...folder, backgroundColor: editBgColor, backgroundImage: editBgImage }
+          : folder
+      );
+      setFolders(updated);
+      setBackgroundFolderId("");
+      setEditBgImage("");
+    } catch (error) {
+      console.error("Error changing background:", error);
+    }
   };
 
-  const deleteFolder = (folderId: string) => {
+  const deleteFolder = async (folderId: string) => {
     if (!isAdmin) return;
-
     if (!confirm("Do you want to delete this folder?")) return;
 
-    saveFolders(folders.filter((item) => item.id !== folderId));
-    saveTestSets(testSets.filter((item) => item.folderId !== folderId));
+    try {
+      await deleteDoc(doc(db, "mt_folders", folderId));
+      setFolders(folders.filter((item) => item.id !== folderId));
 
-    if (openedFolderId === folderId) {
-      resetToFolders();
+      const deletingSets = testSets.filter((item) => item.folderId === folderId);
+      for (const item of deletingSets) {
+        await deleteDoc(doc(db, "mt_sets", item.id));
+      }
+      setTestSets(testSets.filter((item) => item.folderId !== folderId));
+
+      if (openedFolderId === folderId) {
+        resetToFolders();
+      }
+      setMenuOpenId("");
+    } catch (error) {
+      console.error("Delete error:", error);
     }
-
-    setMenuOpenId("");
   };
 
   const addQuestionToDraft = () => {
@@ -590,7 +591,7 @@ function MockTestContent() {
     setDraftQuestions(draftQuestions.filter((item) => item.id !== id));
   };
 
-  const saveSet = () => {
+  const saveSet = async () => {
     if (!isAdmin) return;
 
     if (!activeSubject) {
@@ -623,22 +624,28 @@ function MockTestContent() {
       createdAt: Date.now(),
     };
 
-    saveTestSets([newSet, ...testSets]);
+    try {
+      await setDoc(doc(db, "mt_sets", newSet.id), newSet);
+      setTestSets([newSet, ...testSets]);
 
-void sendNotificationToStudents({
-  title: "Successful Academy Official",
-  body:
-    activeSubject === "gk"
-      ? "New General Knowledge Mock Test uploaded."
-      : activeSubject === "math"
-      ? "New Mathematics Mock Test uploaded."
-      : activeSubject === "reasoning"
-      ? "New Reasoning Mock Test uploaded."
-      : "New All Mixed Mock Test uploaded.",
-  url: `/mock-test?exam=${encodeURIComponent(selectedExam)}`,
-});
-    clearSetForm();
-    setShowAddSet(false);
+      void sendNotificationToStudents({
+        title: "Successful Academy Official",
+        body:
+          activeSubject === "gk"
+            ? "New General Knowledge Mock Test uploaded."
+            : activeSubject === "math"
+            ? "New Mathematics Mock Test uploaded."
+            : activeSubject === "reasoning"
+            ? "New Reasoning Mock Test uploaded."
+            : "New All Mixed Mock Test uploaded.",
+        url: `/mock-test?exam=${encodeURIComponent(selectedExam)}`,
+      });
+
+      clearSetForm();
+      setShowAddSet(false);
+    } catch (error) {
+      console.error("Error saving set:", error);
+    }
   };
 
   const clearSetForm = () => {
@@ -654,22 +661,33 @@ void sendNotificationToStudents({
     setDraftQuestions([]);
   };
 
-  const toggleSetVisibility = (id: string) => {
+  const toggleSetVisibility = async (id: string) => {
     if (!isAdmin) return;
 
-    const updated = testSets.map((item) =>
-      item.id === id ? { ...item, visible: !item.visible } : item
-    );
+    const item = testSets.find((i) => i.id === id);
+    if (!item) return;
 
-    saveTestSets(updated);
+    try {
+      await updateDoc(doc(db, "mt_sets", id), { visible: !item.visible });
+      const updated = testSets.map((s) =>
+        s.id === id ? { ...s, visible: !s.visible } : s
+      );
+      setTestSets(updated);
+    } catch (error) {
+      console.error("Error toggling visibility:", error);
+    }
   };
 
-  const deleteSet = (id: string) => {
+  const deleteSet = async (id: string) => {
     if (!isAdmin) return;
-
     if (!confirm("Do you want to delete this test set?")) return;
 
-    saveTestSets(testSets.filter((item) => item.id !== id));
+    try {
+      await deleteDoc(doc(db, "mt_sets", id));
+      setTestSets(testSets.filter((item) => item.id !== id));
+    } catch (error) {
+      console.error("Error deleting set:", error);
+    }
   };
 
   const startTest = (item: TestSetType) => {
@@ -684,7 +702,6 @@ void sendNotificationToStudents({
 
   const chooseAnswer = (questionId: string, option: CorrectOption) => {
     if (answers[questionId] || timedOutQuestions[questionId]) return;
-
     setAnswers({ ...answers, [questionId]: option });
   };
 
@@ -703,13 +720,11 @@ void sendNotificationToStudents({
 
   const submitTest = () => {
     if (!runningSet) return;
-
     const finalScore = calculateResultStats(
       runningSet,
       answers,
       timedOutQuestions
     ).score;
-
     setScore(finalScore);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -981,7 +996,7 @@ void sendNotificationToStudents({
                   />
 
                   <div style={buttonRowStyle}>
-                    <button onClick={createFolder} style={smallBlueButtonStyle}>
+                    <button onClick={() => void createFolder()} style={smallBlueButtonStyle}>
                       {t.createFolder}
                     </button>
 
@@ -1040,7 +1055,7 @@ void sendNotificationToStudents({
                         </button>
 
                         <button
-                          onClick={() => deleteFolder(folder.id)}
+                          onClick={() => void deleteFolder(folder.id)}
                           style={deleteMenuItemStyle}
                         >
                           {t.delete}
@@ -1066,7 +1081,7 @@ void sendNotificationToStudents({
                     />
 
                     <div style={buttonRowStyle}>
-                      <button onClick={saveRenameFolder} style={smallBlueButtonStyle}>
+                      <button onClick={() => void saveRenameFolder()} style={smallBlueButtonStyle}>
                         {t.save}
                       </button>
 
@@ -1107,7 +1122,7 @@ void sendNotificationToStudents({
                     />
 
                     <div style={buttonRowStyle}>
-                      <button onClick={saveBackgroundChange} style={smallBlueButtonStyle}>
+                      <button onClick={() => void saveBackgroundChange()} style={smallBlueButtonStyle}>
                         {t.save}
                       </button>
 
@@ -1307,7 +1322,7 @@ void sendNotificationToStudents({
               )}
 
               <div style={buttonRowStyle}>
-                <button onClick={saveSet} style={smallBlueButtonStyle}>
+                <button onClick={() => void saveSet()} style={smallBlueButtonStyle}>
                   {t.saveSet}
                 </button>
 
@@ -1347,13 +1362,13 @@ void sendNotificationToStudents({
                   {isAdmin && (
                     <>
                       <button
-                        onClick={() => toggleSetVisibility(item.id)}
+                        onClick={() => void toggleSetVisibility(item.id)}
                         style={smallGreenButtonStyle}
                       >
                         {item.visible ? t.hidden : t.visible}
                       </button>
 
-                      <button onClick={() => deleteSet(item.id)} style={smallRedButtonStyle}>
+                      <button onClick={() => void deleteSet(item.id)} style={smallRedButtonStyle}>
                         {t.delete}
                       </button>
                     </>
@@ -1367,6 +1382,7 @@ void sendNotificationToStudents({
     </main>
   );
 }
+
 export default function MockTestPage() {
   return (
     <Suspense fallback={<main style={loadingStyle}>Loading Mock Test...</main>}>
@@ -1374,7 +1390,6 @@ export default function MockTestPage() {
     </Suspense>
   );
 }
-
 
 function getQuestionTimeSeconds(item: TestSetType) {
   if (typeof item.questionTimeSeconds === "number" && item.questionTimeSeconds > 0) {
@@ -1471,25 +1486,6 @@ function getFolderBackground(folder: FolderType) {
   return `linear-gradient(135deg, ${
     folder.backgroundColor || "#2563eb"
   }, #7c3aed, #14b8a6)`;
-}
-
-function readFirstLocalStorageList<T>(keys: string[]): T[] {
-  for (const key of keys) {
-    try {
-      const value = localStorage.getItem(key);
-      if (!value) continue;
-
-      const parsed = JSON.parse(value);
-
-      if (Array.isArray(parsed)) {
-        return parsed as T[];
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return [];
 }
 
 function fileToDataUrl(file: File): Promise<string> {
@@ -2158,13 +2154,6 @@ const setSubTextStyle: CSSProperties = {
   fontWeight: "bold",
 };
 
-const questionListStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr",
-  gap: "16px",
-  marginTop: "18px",
-};
-
 const questionCardStyle: CSSProperties = {
   position: "relative",
   zIndex: 3,
@@ -2180,19 +2169,6 @@ const questionTitleStyle: CSSProperties = {
   zIndex: 4,
   color: "#1e3a8a",
   marginTop: 0,
-};
-
-const optionLabelStyle: CSSProperties = {
-  position: "relative",
-  zIndex: 4,
-  display: "block",
-  marginTop: "10px",
-  padding: "10px",
-  borderRadius: "12px",
-  background: "#eff6ff",
-  color: "#1e3a8a",
-  fontWeight: "bold",
-  cursor: "pointer",
 };
 
 const scoreBoxStyle: CSSProperties = {
