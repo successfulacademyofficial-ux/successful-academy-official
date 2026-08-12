@@ -850,17 +850,18 @@ function CurrentAffairsContent() {
                     <p style={resourceSubTextStyle}>{item.fileName}</p>
 
                     <div style={buttonRowStyle}>
-                      <button
-                        onClick={() => setViewerFile(item)}
-                        style={smallLinkButtonStyle}
-                      >
-                        View File
-                      </button>
-
                       <a
                         href={item.dataUrl}
-                        download={item.fileName}
-                        style={{ ...smallGreenButtonStyle, textDecoration: "none" }}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ ...smallLinkButtonStyle, display: "inline-block", textDecoration: "none" }}
+                      >
+                        View File
+                      </a>
+
+                      <a
+                        href={item.dataUrl.replace("/upload/", "/upload/fl_attachment/")}
+                        style={{ ...smallGreenButtonStyle, display: "inline-block", textDecoration: "none" }}
                       >
                         Download
                       </a>
